@@ -225,7 +225,15 @@ def scrape_player_names(url: str):
             # Added robust Sidearm Sports selectors for players (common for USD)
             'li.sidearm-roster-player-name a',
             'div.sidearm-roster-list-item-name a',
-            'th.name a[href*="/bios/"]'
+            'th.name a[href*="/bios/"]',
+            'div.flex-grow-1 a[aria-label]',
+            'a[aria-label*="full bio"]',
+            'a[aria-label*="View Full Bio"]',
+            'a[href*="/roster/"][aria-label]',
+            'div[class*="sidearm-roster-list-item-name"] a',
+            'a[href*="/roster/"][href^="https://arkansasrazorbacks.com/"]',
+            'a[href*="/roster/"]',
+            'a[href*="/roster/"]:not(:has(*))'
         ]
 
         # --- Step 1: scrape common selectors ---
