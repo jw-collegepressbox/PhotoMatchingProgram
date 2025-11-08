@@ -690,16 +690,10 @@ if st.button("Check Files"):
         # --- Remove non-player entries using invalid keywords ---
         invalid_keywords = [
             "coach", "staff", "jersey", "number", "manager", "director",
-            "head coach", "assistant", "trainer", "operations"
+            "head coach", "assistant", "trainer", "operations", "headshot"
         ]
         for key in list(player_keys.keys()):
-            name = player_keys[key]
-            parts = name.split()
-            first = parts[0] if len(parts) > 0 else ""
-            last = parts[-1] if len(parts) > 1 else ""
-
-            if any(re.search(rf"\b{re.escape(word)}\b", first.lower()) for word in invalid_keywords) or \
-            any(re.search(rf"\b{re.escape(word)}\b", last.lower()) for word in invalid_keywords):
+            if contains_invalid_word(player_keys[key], invalid_keywords):
                 del player_keys[key]
                 if key in nickname_keys:
                     del nickname_keys[key]
