@@ -139,6 +139,7 @@ def scrape_baylor_staff(url: str):
         st.error(f"Error scraping Baylor staff (BS version): {e}")
         return {}
 
+
 def contains_invalid_word(name: str, invalid_words: list[str]) -> bool:
     """
     Returns True if any invalid word matches as a whole word in the name.
@@ -161,8 +162,6 @@ def clean_roster_name(raw_name: str) -> str:
             last, first = parts
             return f"{first} {last}"
     return raw_name
-
-
 
 def scrape_player_names(url: str):
     """
@@ -189,6 +188,18 @@ def scrape_player_names(url: str):
         resp = requests.get(url, timeout=30, headers=COMMON_HEADERS)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
+
+        # --- George Mason specific scraping ---
+        if "gomason.com" in url.lower():
+            found_names.clear()  # reset any previously found names for safety
+            for a_tag in soup.select('a[href*="/roster/"]'):
+                # The 'title' attribute contains the full player name
+                name = a_tag.get("title", "").strip()
+                # Skip links without a name or that are obviously non-players
+                if not name or any(kw in name.lower() for kw in ["bio", "staff", "coach", "view"]):
+                    continue
+                found_names.add(clean_roster_name(name))
+
 
         # --- Baylor logic ---
         if is_baylor:
@@ -233,7 +244,7 @@ def scrape_player_names(url: str):
             'div[class*="sidearm-roster-list-item-name"] a',
             'a[href*="/roster/"][href^="https://arkansasrazorbacks.com/"]',
             'a[href*="/roster/"]',
-            'a[href*="/roster/"]:not(:has(*))'
+            'div.sidearm-roster-list-item-name.sidearm-roster-player-name a'
         ]
 
         # --- Step 1: scrape common selectors ---
@@ -682,7 +693,13 @@ if st.button("Check Files"):
             "head coach", "assistant", "trainer", "operations"
         ]
         for key in list(player_keys.keys()):
-            if contains_invalid_word(player_keys[key], invalid_keywords):
+            name = player_keys[key]
+            parts = name.split()
+            first = parts[0] if len(parts) > 0 else ""
+            last = parts[-1] if len(parts) > 1 else ""
+
+            if any(re.search(rf"\b{re.escape(word)}\b", first.lower()) for word in invalid_keywords) or \
+            any(re.search(rf"\b{re.escape(word)}\b", last.lower()) for word in invalid_keywords):
                 del player_keys[key]
                 if key in nickname_keys:
                     del nickname_keys[key]
