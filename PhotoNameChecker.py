@@ -163,6 +163,62 @@ def clean_roster_name(raw_name: str) -> str:
             return f"{first} {last}"
     return raw_name
 
+def scrape_wyoming_players_selenium(url: str):
+    """
+    Scrape Wyoming players using Selenium (JavaScript-rendered page).
+    """
+    found_names = set()
+    
+    try:
+        st.write("DEBUG: Initializing Selenium for Wyoming...")
+        
+        # Setup Chrome options
+        chrome_options = Options()
+        chrome_options.add_argument('--headless')
+        chrome_options.add_argument('--no-sandbox')
+        chrome_options.add_argument('--disable-dev-shm-usage')
+        chrome_options.add_argument('--disable-gpu')
+        
+        # Initialize driver
+        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
+        driver.get(url)
+        
+        st.write("DEBUG: Page loaded, waiting for JavaScript...")
+        # Wait for JavaScript to load the roster
+        time.sleep(5)
+        
+        # Find all roster links
+        elements = driver.find_elements(By.CSS_SELECTOR, 'a[href*="/sports/football/roster/"]')
+        #st.write(f"DEBUG Selenium: Found {len(elements)} roster links")
+        
+        for elem in elements:
+            try:
+                href = elem.get_attribute('href') or ''
+                
+                # SKIP COACHES - they have /roster/coaches/ in the URL
+                if '/coaches/' in href or '/staff/' in href:
+                    #st.write(f"DEBUG Selenium: Skipping coach/staff link: {href}")
+                    continue
+                
+                name = elem.get_attribute('title') or elem.text
+                name = name.strip()
+                
+                if name:
+                    # Clean up extra spaces
+                    name = re.sub(r'\s+', ' ', name)
+                    found_names.add(name)
+                    #st.write(f"DEBUG Selenium: Added player: {name}")
+            except:
+                continue
+        
+        driver.quit()
+        # Selenium: Total players found: {len(found_names)}")
+        return found_names
+        
+    except Exception as e:
+        st.error(f"Selenium error for Wyoming: {e}")
+        return set()
+
 def scrape_player_names(url: str):
     """
     Scrape player names from a roster page.
@@ -171,7 +227,8 @@ def scrape_player_names(url: str):
         nickname_names: {normalized_name: original_name} (if nicknames detected)
     """
     is_baylor = "baylorbears.com" in url.lower()
-    is_stetson = "stetson.edu" in url.lower()  # Stetson-specific
+    is_stetson = "stetson.edu" in url.lower()
+    is_wyoming = "gowyo.com" in url.lower() or "wyoming" in url.lower()  # ADD THIS
 
     found_names = set()
 
@@ -184,10 +241,24 @@ def scrape_player_names(url: str):
     ]
 
     try:
-        # **FIX 1 & 2:** Use common headers and increased timeout
         resp = requests.get(url, timeout=30, headers=COMMON_HEADERS)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
+
+        # --- DEBUGGING: Check if we got the page ---
+        st.write(f"DEBUG: Page fetched successfully, length: {len(resp.text)}")
+
+        # --- Wyoming-specific scraping (ADD THIS BLOCK) ---
+        if is_wyoming:
+            st.write("DEBUG: Detected Wyoming roster - using Selenium")
+            found_names = scrape_wyoming_players_selenium(url)
+            
+            if found_names:
+                primary_names = {normalize(name): name for name in found_names}
+                return primary_names, {}
+            else:
+                st.warning("No Wyoming players found with Selenium")
+                return {}, {}
 
         # --- George Mason specific scraping ---
         if "gomason.com" in url.lower():
@@ -226,6 +297,7 @@ def scrape_player_names(url: str):
             ".roster-list-item__title",
             ".player-name",
             "td.sidearm-table-player-name",
+            "td.sidearm-roster-table-data a[href*='/roster/']",
             ".roster-list__item-name",
             "a.table__roster-name",
             "td.sidearm-roster-table-data a[title]",
