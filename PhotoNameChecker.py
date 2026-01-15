@@ -170,8 +170,6 @@ def scrape_wyoming_players_selenium(url: str):
     found_names = set()
     
     try:
-        st.write("DEBUG: Initializing Selenium for Wyoming...")
-        
         # Setup Chrome options
         chrome_options = Options()
         chrome_options.add_argument('--headless')
@@ -179,25 +177,28 @@ def scrape_wyoming_players_selenium(url: str):
         chrome_options.add_argument('--disable-dev-shm-usage')
         chrome_options.add_argument('--disable-gpu')
         
-        # Initialize driver
-        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
+        # Detect if running on Streamlit Cloud or similar Linux environment
+        try:
+            # Try to use system chromium-driver (for Streamlit Cloud)
+            driver = webdriver.Chrome(options=chrome_options)
+        except:
+            # Fallback to ChromeDriverManager (for local development)
+            driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
+        
         driver.get(url)
         
-        st.write("DEBUG: Page loaded, waiting for JavaScript...")
         # Wait for JavaScript to load the roster
         time.sleep(5)
         
         # Find all roster links
         elements = driver.find_elements(By.CSS_SELECTOR, 'a[href*="/sports/football/roster/"]')
-        #st.write(f"DEBUG Selenium: Found {len(elements)} roster links")
         
         for elem in elements:
             try:
                 href = elem.get_attribute('href') or ''
                 
-                # SKIP COACHES - they have /roster/coaches/ in the URL
+                # Skip coaches/staff - they have /coaches/ or /staff/ in the URL
                 if '/coaches/' in href or '/staff/' in href:
-                    #st.write(f"DEBUG Selenium: Skipping coach/staff link: {href}")
                     continue
                 
                 name = elem.get_attribute('title') or elem.text
@@ -207,12 +208,10 @@ def scrape_wyoming_players_selenium(url: str):
                     # Clean up extra spaces
                     name = re.sub(r'\s+', ' ', name)
                     found_names.add(name)
-                    #st.write(f"DEBUG Selenium: Added player: {name}")
             except:
                 continue
         
         driver.quit()
-        # Selenium: Total players found: {len(found_names)}")
         return found_names
         
     except Exception as e:
