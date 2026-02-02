@@ -92,7 +92,7 @@ def scrape_baylor_players(url: str):
     players = {}
     nickname_names = {}
 
-    r = requests.get(url, headers=COMMON_HEADERS, timeout=30)
+    r = requests.get(url, headers=COMMON_HEADERS, timeout=30, verify=False)
     r.raise_for_status()
     soup = BeautifulSoup(r.text, "html.parser")
 
@@ -117,7 +117,7 @@ def scrape_baylor_staff(url: str):
     staff_dict = {}
 
     try:
-        r = requests.get(url, headers=COMMON_HEADERS, timeout=30)
+        r = requests.get(url, headers=COMMON_HEADERS, timeout=30, verify=False)
         r.raise_for_status()
         soup = BeautifulSoup(r.text, "html.parser")
 
@@ -191,7 +191,7 @@ def scrape_wyoming_players_selenium(url: str):
         time.sleep(5)
         
         # Find all roster links
-        elements = driver.find_elements(By.CSS_SELECTOR, 'a[href*="/sports/football/roster/"]')
+        elements = driver.find_elements(By.CSS_SELECTOR, 'a[href*="/roster/"], div.sidearm-roster-player-name a')
         
         for elem in elements:
             try:
@@ -228,6 +228,7 @@ def scrape_player_names(url: str):
     is_baylor = "baylorbears.com" in url.lower()
     is_stetson = "stetson.edu" in url.lower()
     is_wyoming = "gowyo.com" in url.lower() or "wyoming" in url.lower()  # ADD THIS
+    is_george_mason = "gomason.com" in url.lower()
 
     found_names = set()
 
@@ -236,20 +237,18 @@ def scrape_player_names(url: str):
         "links", "gameday", "staff", "coach", "bio", "media",
         "ireland", "tarheels2ireland", "central", "additional",
         "more", "results", "events", "©", "menu", "25fb", "2025",
-        "photo", "headshot"
+        "photo", "headshot", "print", "roster"
     ]
 
     try:
-        resp = requests.get(url, timeout=30, headers=COMMON_HEADERS)
+        resp = requests.get(url, timeout=30, headers=COMMON_HEADERS, verify=False)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        # --- DEBUGGING: Check if we got the page ---
-        st.write(f"DEBUG: Page fetched successfully, length: {len(resp.text)}")
 
         # --- Wyoming-specific scraping (ADD THIS BLOCK) ---
-        if is_wyoming:
-            st.write("DEBUG: Detected Wyoming roster - using Selenium")
+        # --- Wyoming and George Mason specific scraping (JavaScript-rendered) ---
+        if is_wyoming or is_george_mason:
             found_names = scrape_wyoming_players_selenium(url)
             
             if found_names:
@@ -259,16 +258,6 @@ def scrape_player_names(url: str):
                 st.warning("No Wyoming players found with Selenium")
                 return {}, {}
 
-        # --- George Mason specific scraping ---
-        if "gomason.com" in url.lower():
-            found_names.clear()  # reset any previously found names for safety
-            for a_tag in soup.select('a[href*="/roster/"]'):
-                # The 'title' attribute contains the full player name
-                name = a_tag.get("title", "").strip()
-                # Skip links without a name or that are obviously non-players
-                if not name or any(kw in name.lower() for kw in ["bio", "staff", "coach", "view"]):
-                    continue
-                found_names.add(clean_roster_name(name))
 
 
         # --- Baylor logic ---
@@ -366,7 +355,7 @@ def scrape_staff_names(url: str):
     
     try:
         # **FIX 1 & 2:** Use common headers and increased timeout
-        resp = requests.get(url, timeout=30, headers=COMMON_HEADERS)
+        resp = requests.get(url, timeout=30, headers=COMMON_HEADERS, verify=False)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
 
@@ -622,7 +611,7 @@ def get_drive_folder_png_filenames(folder_url: str) -> list[str]:
     for url in candidates:
         try:
             # **FIX:** Use headers here too, just in case Drive is sensitive
-            r = requests.get(url, timeout=30, headers=COMMON_HEADERS)
+            r = requests.get(url, timeout=30, headers=COMMON_HEADERS, verify=False)
             r.raise_for_status()
             soup = BeautifulSoup(r.text, "html.parser")
 
@@ -761,7 +750,8 @@ if st.button("Check Files"):
         # --- Remove non-player entries using invalid keywords ---
         invalid_keywords = [
             "coach", "staff", "jersey", "number", "manager", "director",
-            "head coach", "assistant", "trainer", "operations", "headshot"
+            "head coach", "assistant", "trainer", "operations", "headshot", "print",
+            "roster"
         ]
         for key in list(player_keys.keys()):
             if contains_invalid_word(player_keys[key], invalid_keywords):
