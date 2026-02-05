@@ -163,6 +163,43 @@ def clean_roster_name(raw_name: str) -> str:
             return f"{first} {last}"
     return raw_name
 
+def fix_character_confusion(name: str) -> str:
+    """
+    Fix common OCR/font character confusions in scraped names.
+    Example: "Mclntosh" -> "McIntosh"
+    """
+    # Fix Mc[lowercase L] followed by consonants -> Mc[uppercase I]
+    # This handles "Mclntosh" -> "McIntosh"
+    name = re.sub(r'\bMcl([bcdfghjkmnpqrstvwxyz])', r'McI\1', name, flags=re.IGNORECASE)
+    
+    return name
+
+def remove_credentials(name: str) -> str:
+    """
+    Remove common credentials/titles from names.
+    Examples: MS, ATC, LAT, PhD, MD, MBA, etc.
+    Also removes nicknames in quotes.
+    """
+    # Remove anything between quotes (handles all quote types)
+    # Use Unicode escape codes for curly quotes to avoid syntax errors
+    
+    # Curly double quotes: " " (U+201C and U+201D)
+    name = re.sub(r'[\u201c\u201d][^\u201c\u201d]*[\u201c\u201d]', '', name)
+    # Straight double quotes: " "
+    name = re.sub(r'"[^"]*"', '', name)
+    # Curly single quotes: ' ' (U+2018 and U+2019)
+    name = re.sub(r'[\u2018\u2019][^\u2018\u2019]*[\u2018\u2019]', '', name)
+    # Straight single quotes: ' '
+    name = re.sub(r"'[^']*'", '', name)
+    
+    # Remove credentials pattern like ", MS, ATC, LAT"
+    name = re.sub(r',\s*[A-Z]{2,}(\s*,\s*[A-Z]{2,})*', '', name)
+    # Remove trailing commas
+    name = re.sub(r',\s*$', '', name).strip()
+    # Clean up extra spaces
+    name = re.sub(r'\s+', ' ', name).strip()
+    return name
+
 def scrape_wyoming_players_selenium(url: str):
     """
     Scrape Wyoming players using Selenium (JavaScript-rendered page).
@@ -227,40 +264,37 @@ def scrape_player_names(url: str):
     """
     is_baylor = "baylorbears.com" in url.lower()
     is_stetson = "stetson.edu" in url.lower()
-    is_wyoming = "gowyo.com" in url.lower() or "wyoming" in url.lower()  # ADD THIS
+    is_wyoming = "gowyo.com" in url.lower() or "wyoming" in url.lower()
     is_george_mason = "gomason.com" in url.lower()
-
+    is_siena = "sienasaints.com" in url.lower()  # ADD THIS
+    
     found_names = set()
-
     invalid_keywords = [
         "news", "schedule", "statistics", "videos",
         "links", "gameday", "staff", "coach", "bio", "media",
         "ireland", "tarheels2ireland", "central", "additional",
         "more", "results", "events", "©", "menu", "25fb", "2025",
-        "photo", "headshot", "print", "roster"
+        "photo", "headshot", "print", "roster", "search", "jump",
+        "video", "feb", "mar", "stats", "baseball",
+        "donate", "coaches", "camps"
     ]
-
+    
     try:
         resp = requests.get(url, timeout=30, headers=COMMON_HEADERS, verify=False)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
-
-
-        # --- Wyoming-specific scraping (ADD THIS BLOCK) ---
-        # --- Wyoming and George Mason specific scraping (JavaScript-rendered) ---
+        
+        # Wyoming and George Mason specific scraping (JavaScript-rendered)
         if is_wyoming or is_george_mason:
             found_names = scrape_wyoming_players_selenium(url)
-            
             if found_names:
                 primary_names = {normalize(name): name for name in found_names}
                 return primary_names, {}
             else:
                 st.warning("No Wyoming players found with Selenium")
                 return {}, {}
-
-
-
-        # --- Baylor logic ---
+        
+        # Baylor logic
         if is_baylor:
             return scrape_baylor_players(url)
         
@@ -273,12 +307,32 @@ def scrape_player_names(url: str):
                     name = clean_roster_name(raw_name)
                     if name and not contains_invalid_word(name, ["news", "schedule", "staff", "coach", "video"]):
                         found_names.add(name)
-
             primary_names = {normalize(name): name for name in found_names}
             nickname_names = {}
             return primary_names, nickname_names
-
-
+        
+        # --- Siena-specific scraping (ADD THIS BLOCK) ---
+        if is_siena:
+            # Siena uses a specific structure - target player links directly
+            for a_tag in soup.select('li.sidearm-roster-player a[href*="/roster/"]'):
+                # Skip staff links
+                if '/staff/' in a_tag.get('href', ''):
+                    continue
+                    
+                # Try to find name in h3 tag
+                h3_tag = a_tag.find('h3')
+                if h3_tag:
+                    name = h3_tag.get_text(" ", strip=True)
+                    name = clean_roster_name(name)
+                    if name and not contains_invalid_word(name, invalid_keywords):
+                        found_names.add(name)
+            
+            # If we found names, return them
+            if found_names:
+                st.info(f"Siena scraper found {len(found_names)} players")  # DEBUG
+                primary_names = {normalize(name): name for name in found_names}
+                return primary_names, {}
+        
         # --- Common selectors for other schools ---
         common_player_selectors = [
             ".s-text-regular-bold",
@@ -286,14 +340,13 @@ def scrape_player_names(url: str):
             ".player-name",
             "td.sidearm-table-player-name",
             "td.sidearm-roster-table-data a[href*='/roster/']",
-            ".roster-list__item-name",
+            ".roster-list-item__name",
             "a.table__roster-name",
             "td.sidearm-roster-table-data a[title]",
             "td > a[href*='/roster/season/']",
             "a.table__roster-name span",
             'div[data-test-id="s-person-details__personal-single-line"] h3',
             'a[href*="/player/"]',
-            # Added robust Sidearm Sports selectors for players (common for USD)
             'li.sidearm-roster-player-name a',
             'div.sidearm-roster-list-item-name a',
             'th.name a[href*="/bios/"]',
@@ -304,42 +357,52 @@ def scrape_player_names(url: str):
             'div[class*="sidearm-roster-list-item-name"] a',
             'a[href*="/roster/"][href^="https://arkansasrazorbacks.com/"]',
             'a[href*="/roster/"]',
-            'div.sidearm-roster-list-item-name.sidearm-roster-player-name a'
+            'div.sidearm-roster-list-item-name.sidearm-roster-player-name a',
+            'li.sidearm-roster-player h3',  # ADD THIS for Siena
         ]
-
+        
         # --- Step 1: scrape common selectors ---
         for element in soup.select(", ".join(common_player_selectors)):
-            name = clean_roster_name(element.get_text(" ", strip=True))
-
+            name = element.get_text(" ", strip=True)
+            name = remove_credentials(name)
+            name = clean_roster_name(name)
+            name = fix_character_confusion(name)
             if contains_invalid_word(name, invalid_keywords):
                 continue
             if name and not contains_invalid_word(name, invalid_keywords):
                 found_names.add(name)
-
-
+        
+        # --- Kansas-specific: remove staff from found_names ---
+        if "kuathletics.com" in url.lower():
+            staff_elements = soup.select('[data-test-id="staff-directory-bio-component__staff-name-value"]')
+            for elem in staff_elements:
+                staff_name = elem.get_text(strip=True)
+                staff_name = clean_roster_name(staff_name)
+                if staff_name in found_names:
+                    found_names.discard(staff_name)
+        
         # --- Step 2: ASU-specific fix: scrape alt from player images ---
         for img_tag in soup.select('a.roster-card__image-wrapper img'):
             name = img_tag.get('alt', '').strip()
             if name:
                 found_names.add(name)
-
+        
         # --- Step 3: build primary and nickname dictionaries ---
         primary_names = {}
         nickname_names = {}
         for name in found_names:
             # Look for nicknames in quotes
-            match = re.search(r'(\S+)\s+["“”‘’](.+?)["“”‘’]\s+(.+)', name)
+            match = re.search(r'(\S+)\s+["""''](.+?)["""'']\s+(.+)', name)
             if match:
                 first_name, nickname, last_name = match.groups()
                 primary_names[normalize(f"{first_name} {last_name}")] = name
                 nickname_names[normalize(f"{nickname} {last_name}")] = name
             else:
                 primary_names[normalize(name)] = name
-
+        
         return primary_names, nickname_names
-
+        
     except Exception as e:
-        # Improved error logging for debugging
         st.error(f"Error scraping player names from URL: {e}")
         return {}, {}
 
@@ -413,6 +476,7 @@ def scrape_staff_names(url: str):
                 continue
 
             name = name_tag.get_text(" ", strip=True)
+            name = remove_credentials(name)  # ADD THIS LINE
             title = title_tag.get_text(" ", strip=True) if title_tag else "Staff"
 
             if "bio" in name.lower() or "view" in name.lower():
@@ -430,6 +494,7 @@ def scrape_staff_names(url: str):
                 continue
             
             name = name_tag.get_text(" ", strip=True)
+            name = remove_credentials(name)
             title = title_tag.get_text(" ", strip=True) if title_tag else "Staff"
             
             staff_dict[normalize(name)] = {"name": name, "title": title}
@@ -437,6 +502,7 @@ def scrape_staff_names(url: str):
         # Process new h3 name format
         for name_h3 in h3_staff_names:
             name = name_h3.get_text(" ", strip=True)
+            name = remove_credentials(name)
             staff_dict[normalize(name)] = {"name": name, "title": "Staff"}
 
         # Process the new Clemson staff table format
@@ -445,6 +511,7 @@ def scrape_staff_names(url: str):
             title_tag = row.select_one('td:nth-of-type(2)')
             if name_tag and title_tag:
                 name = name_tag.get_text(" ", strip=True)
+                name = remove_credentials(name)
                 title = title_tag.get_text(" ", strip=True)
                 staff_dict[normalize(name)] = {"name": name, "title": title}
         
@@ -454,6 +521,7 @@ def scrape_staff_names(url: str):
             title_tag = name_tag.parent.find_next_sibling('td')
             if name_tag and title_tag:
                 name = name_tag.get_text(" ", strip=True)
+                name = remove_credentials(name)
                 title = title_tag.get_text(" ", strip=True)
                 staff_dict[normalize(name)] = {"name": name, "title": title}
 
@@ -462,6 +530,7 @@ def scrape_staff_names(url: str):
             name_span = link.select_one('span')
             if name_span:
                 name = name_span.get_text(" ", strip=True)
+                name = remove_credentials(name)
                 staff_dict[normalize(name)] = {"name": name, "title": "Staff"}
 
         # New selector for Syracuse staff
@@ -470,22 +539,27 @@ def scrape_staff_names(url: str):
             name_tag = link.select_one('h3')
             if name_tag:
                 name = name_tag.get_text(" ", strip=True)
+                name = remove_credentials(name)
                 staff_dict[normalize(name)] = {"name": name, "title": "Staff"}
         
         # Process new Virginia Tech staff format
         for link in vt_staff_links:
             name = link.get_text(" ", strip=True)
+            name = remove_credentials(name)
+            
             staff_dict[normalize(name)] = {"name": name, "title": "Staff"}
 
         # New selector for Virginia coaches
         for link in uva_coach_links:
             name = link.get_text(" ", strip=True)
+            name = remove_credentials(name)
             staff_dict[normalize(name)] = {"name": name, "title": "Coach"}
 
         # Additional check for UNC format where coaches are listed in a separate table
         coach_names = soup.select('a[href*="/coaches/"] span.s-text-regular-bold')
         for name_span in coach_names:
             name = name_span.get_text(" ", strip=True)
+            name = remove_credentials(name)
             staff_dict[normalize(name)] = {"name": name, "title": "Coach"}
 
         return staff_dict
@@ -672,6 +746,15 @@ def check_mismatches_and_missing(parsed_files, player_keys, nickname_keys, staff
             elif normalized_filename_name in player_keys:
                 status = "✅"
                 roster_name = player_keys[normalized_filename_name]
+                
+                # Check if filename incorrectly includes Jr/Sr/II/III/IV/V as standalone suffixes
+                # These suffixes should NOT be in the filename
+                first_lower = raw_first.lower()
+                last_lower = raw_last.lower()
+                
+                # Check if suffix exists as a complete word (not part of another word)
+                if re.search(r'\b(jr|sr|ii|iii|iv|v)\b', first_lower) or re.search(r'\b(jr|sr|ii|iii|iv|v)\b', last_lower):
+                    status = "❌ Filename should not include Jr/Sr/II/III/IV/V suffix"
 
             elif normalized_filename_name in nickname_keys:
                 original_roster_name = nickname_keys[normalized_filename_name]
@@ -735,30 +818,29 @@ if st.button("Check Files"):
         st.error("Please fill in both the school prefix and the roster URL.")
     else:
         parsed_files = parse_filenames(image_files)
-
+        
         # --- Scrape players and staff ---
         player_keys, nickname_keys = scrape_player_names(school_url)
         staff_dict = scrape_staff_names(school_url)
-
+        
         # --- Remove staff accidentally scraped as players ---
         for staff_name in list(staff_dict.keys()):
             if staff_name in player_keys:
                 del player_keys[staff_name]
-            if staff_name in nickname_keys:
-                del nickname_keys[staff_name]
-
+        
         # --- Remove non-player entries using invalid keywords ---
         invalid_keywords = [
             "coach", "staff", "jersey", "number", "manager", "director",
             "head coach", "assistant", "trainer", "operations", "headshot", "print",
-            "roster"
+            "roster", "search", "jump", "video", "feb", "mar", "stats", "baseball",
+            "donate", "coaches", "camps"
         ]
         for key in list(player_keys.keys()):
             if contains_invalid_word(player_keys[key], invalid_keywords):
                 del player_keys[key]
-                if key in nickname_keys:
-                    del nickname_keys[key]
-
+            if key in nickname_keys:
+                del nickname_keys[key]
+        
         if not player_keys:
             st.warning("No players detected from the roster page.")
         else:
