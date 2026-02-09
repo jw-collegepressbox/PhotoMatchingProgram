@@ -174,6 +174,30 @@ def fix_character_confusion(name: str) -> str:
     
     return name
 
+def is_valid_player_name(name: str) -> bool:
+    """
+    Check if a name is valid for a player (has at least first and last name).
+    Returns False for single-word names or obviously invalid entries.
+    """
+    if not name or len(name.strip()) == 0:
+        return False
+    
+    # Split by spaces
+    parts = name.strip().split()
+    
+    # Must have at least 2 words (first and last name)
+    if len(parts) < 2:
+        return False
+    
+    # Each part should have at least 2 characters (excludes initials-only entries)
+    # Exception: Allow single letters if they're followed by a period (like "T.J.")
+    for part in parts:
+        clean_part = part.replace('.', '')
+        if len(clean_part) == 0:
+            return False
+    
+    return True
+
 def remove_credentials(name: str) -> str:
     """
     Remove common credentials/titles from names.
@@ -305,8 +329,11 @@ def scrape_player_names(url: str):
                 if name_tag:
                     raw_name = name_tag.get_text(" ", strip=True)
                     name = clean_roster_name(raw_name)
-                    if name and not contains_invalid_word(name, ["news", "schedule", "staff", "coach", "video"]):
+                    
+                    # Use the new validation function
+                    if name and is_valid_player_name(name) and not contains_invalid_word(name, ["news", "schedule", "staff", "coach", "video"]):
                         found_names.add(name)
+            
             primary_names = {normalize(name): name for name in found_names}
             nickname_names = {}
             return primary_names, nickname_names
@@ -332,7 +359,41 @@ def scrape_player_names(url: str):
                 st.info(f"Siena scraper found {len(found_names)} players")  # DEBUG
                 primary_names = {normalize(name): name for name in found_names}
                 return primary_names, {}
-        
+            
+        # --- GENERIC URL-based player/staff separation ---
+        # Try to detect if this site uses /player/ and /staff/ URL patterns
+        player_links = soup.select('a[href*="/player/"]')
+        staff_links = soup.select('a[href*="/staff/"], a[href*="/coaches/"]')
+            
+        # If we found player links with /player/ pattern, use URL-based filtering
+        if len(player_links) >= 5:  # At least 5 players to be confident
+            #st.info(f"Using URL-based player/staff separation (found {len(player_links)} player links)")
+            
+            for a_tag in player_links:
+                # Double-check it's not a staff link
+                href = a_tag.get('href', '')
+                if '/staff/' in href or '/coaches/' in href:
+                    continue
+                
+                # Extract name from various possible locations
+                span_tag = a_tag.find('span')
+                if span_tag:
+                    name = span_tag.get_text(" ", strip=True)
+                else:
+                    name = a_tag.get_text(" ", strip=True)
+                
+                name = clean_roster_name(name)
+                name = fix_character_confusion(name)
+                
+                # Add validation check here
+                if name and is_valid_player_name(name) and not contains_invalid_word(name, invalid_keywords):
+                    found_names.add(name)
+            
+            # If we found names, return them
+            if found_names:
+                primary_names = {normalize(name): name for name in found_names}
+                return primary_names, {}
+
         # --- Common selectors for other schools ---
         common_player_selectors = [
             ".s-text-regular-bold",
@@ -367,9 +428,9 @@ def scrape_player_names(url: str):
             name = remove_credentials(name)
             name = clean_roster_name(name)
             name = fix_character_confusion(name)
-            if contains_invalid_word(name, invalid_keywords):
-                continue
-            if name and not contains_invalid_word(name, invalid_keywords):
+            
+            # Add validation check here
+            if name and is_valid_player_name(name) and not contains_invalid_word(name, invalid_keywords):
                 found_names.add(name)
         
         # --- Kansas-specific: remove staff from found_names ---
@@ -398,8 +459,22 @@ def scrape_player_names(url: str):
                 primary_names[normalize(f"{first_name} {last_name}")] = name
                 nickname_names[normalize(f"{nickname} {last_name}")] = name
             else:
-                primary_names[normalize(name)] = name
-        
+                normalized = normalize(name)
+                
+                # If this normalized name already exists, check if one has a suffix
+                if normalized in primary_names:
+                    existing_name = primary_names[normalized]
+                    existing_has_suffix = bool(re.search(r'\b(jr|sr|ii|iii|iv|v)\b', existing_name.lower()))
+                    current_has_suffix = bool(re.search(r'\b(jr|sr|ii|iii|iv|v)\b', name.lower()))
+                    
+                    # Keep the one WITH the suffix (the player, not the coach)
+                    if current_has_suffix and not existing_has_suffix:
+                        primary_names[normalized] = name
+                    # If existing has suffix and current doesn't, keep existing (do nothing)
+                    # If both have suffixes or neither do, keep the first one (do nothing)
+                else:
+                    primary_names[normalized] = name
+
         return primary_names, nickname_names
         
     except Exception as e:
@@ -417,11 +492,40 @@ def scrape_staff_names(url: str):
         return scrape_baylor_staff(url)
     
     try:
-        # **FIX 1 & 2:** Use common headers and increased timeout
         resp = requests.get(url, timeout=30, headers=COMMON_HEADERS, verify=False)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
+        
+        # --- GENERIC URL-based staff detection ---
+        # Try to detect if this site uses /staff/ or /coaches/ URL patterns
+        staff_links = soup.select('a[href*="/staff/"], a[href*="/coaches/"]')
+        
+        # If we found staff links with URL pattern, use URL-based filtering
+        if len(staff_links) >= 1:  # At least 1 staff member
+            #st.info(f"Using URL-based staff detection (found {len(staff_links)} staff links)")
+            
+            for a_tag in staff_links:
+                # Double-check it's not a player link
+                href = a_tag.get('href', '')
+                if '/player/' in href:
+                    continue
+                
+                # Extract name
+                span_tag = a_tag.find('span')
+                if span_tag:
+                    name = span_tag.get_text(" ", strip=True)
+                else:
+                    name = a_tag.get_text(" ", strip=True)
+                
+                name = remove_credentials(name)
+                name = fix_character_confusion(name)
+                
+                if name:
+                    staff_dict[normalize(name)] = {"name": name, "title": "Staff"}
+            
+            return staff_dict
 
+        # Continue with school-specific checks if generic detection didn't work
         if "thesundevils.com" in url.lower():
             for a_tag in soup.select('h3.roster-card__title a.roster-card__title-link'):
                 href = a_tag.get('href', '')
@@ -476,7 +580,7 @@ def scrape_staff_names(url: str):
                 continue
 
             name = name_tag.get_text(" ", strip=True)
-            name = remove_credentials(name)  # ADD THIS LINE
+            name = remove_credentials(name)
             title = title_tag.get_text(" ", strip=True) if title_tag else "Staff"
 
             if "bio" in name.lower() or "view" in name.lower():
@@ -518,7 +622,7 @@ def scrape_staff_names(url: str):
         # Process the new Georgia Tech staff table format
         for row in gt_staff_rows:
             name_tag = row.select_one('td > a[href*="/coaches/"]')
-            title_tag = name_tag.parent.find_next_sibling('td')
+            title_tag = name_tag.parent.find_next_sibling('td') if name_tag else None
             if name_tag and title_tag:
                 name = name_tag.get_text(" ", strip=True)
                 name = remove_credentials(name)
@@ -546,7 +650,6 @@ def scrape_staff_names(url: str):
         for link in vt_staff_links:
             name = link.get_text(" ", strip=True)
             name = remove_credentials(name)
-            
             staff_dict[normalize(name)] = {"name": name, "title": "Staff"}
 
         # New selector for Virginia coaches
@@ -735,10 +838,26 @@ def check_mismatches_and_missing(parsed_files, player_keys, nickname_keys, staff
             school = entry["school"]
             normalized_filename_name = normalize(f"{raw_first} {raw_last}")
 
-            # Staff first
+            # Staff first - BUT check if this is actually a player with a suffix
             if normalized_filename_name in staff_dict:
-                staff_info = staff_dict[normalized_filename_name]
-                status = f"❌ Not a Player ({staff_info.get('title','Staff')})"
+                # Check if there's also a player with the same normalized name
+                if normalized_filename_name in player_keys:
+                    # Both exist - this is likely a Jr/Sr situation
+                    # Check the original name from roster to see if it has a suffix
+                    original_roster_name = player_keys[normalized_filename_name]
+                    
+                    # If the roster name has Jr/Sr/II/III/IV/V, it's the player, not staff
+                    if re.search(r'\b(jr|sr|ii|iii|iv|v)\b', original_roster_name.lower()):
+                        status = "✅"
+                        roster_name = player_keys[normalized_filename_name]
+                    else:
+                        # No suffix in roster name, so it's actually the staff member
+                        staff_info = staff_dict[normalized_filename_name]
+                        status = f"❌ Not a Player ({staff_info.get('title','Staff')})"
+                else:
+                    # Only in staff dict, not in players
+                    staff_info = staff_dict[normalized_filename_name]
+                    status = f"❌ Not a Player ({staff_info.get('title','Staff')})"
 
             elif school != school_prefix.lower():
                 status = "❌ School prefix mismatch"
@@ -826,7 +945,14 @@ if st.button("Check Files"):
         # --- Remove staff accidentally scraped as players ---
         for staff_name in list(staff_dict.keys()):
             if staff_name in player_keys:
-                del player_keys[staff_name]
+                # Only remove if the player name doesn't have a suffix
+                player_original_name = player_keys[staff_name]
+                has_suffix = bool(re.search(r'\b(jr|sr|ii|iii|iv|v)\b', player_original_name.lower()))
+                
+                # If no suffix, it's actually staff, so remove it
+                if not has_suffix:
+                    del player_keys[staff_name]
+                # If it has a suffix (like "Preston Murphy Jr."), keep it as a player
         
         # --- Remove non-player entries using invalid keywords ---
         invalid_keywords = [
