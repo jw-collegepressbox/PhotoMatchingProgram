@@ -11,6 +11,7 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
+from io import BytesIO
 import time
 
 # --- Common HTTP Headers to avoid basic bot detection and connection issues ---
@@ -902,59 +903,61 @@ def check_mismatches_and_missing(parsed_files, player_keys, nickname_keys, staff
 
     return pd.DataFrame(data)
 
-# --- Streamlit UI (main script) ---
+# --- Helper function for name validation ---
 
-st.title("School Roster Photo Name Checker (Local or Google Drive Folder)")
+def is_valid_player_name(name: str) -> bool:
+    """
+    Check if a name is valid for a player (has at least first and last name).
+    Returns False for single-word names or obviously invalid entries.
+    """
+    if not name or len(name.strip()) == 0:
+        return False
+    
+    # Split by spaces
+    parts = name.strip().split()
+    
+    # Must have at least 2 words (first and last name)
+    if len(parts) < 2:
+        return False
+    
+    # Each part should have at least 1 character
+    for part in parts:
+        clean_part = part.replace('.', '')
+        if len(clean_part) == 0:
+            return False
+    
+    return True
 
-source = st.radio("Where are the images stored?", ["Local folder", "Google Drive folder"])
+# --- Batch Processing Functions ---
 
-image_files: list[str] = []
-
-if source == "Local folder":
-    folder_path = st.text_input("Paste the path to your image folder here:")
-    if folder_path and os.path.exists(folder_path):
-        image_files = [f for f in os.listdir(folder_path) if f.lower().endswith(".png")]
-        st.caption(f"Found {len(image_files)} .png files locally.")
-    elif folder_path:
-        st.error("Folder path does not exist.")
-
-elif source == "Google Drive folder":
-    drive_folder_url = st.text_input("Paste the PUBLIC Google Drive folder URL here:")
-    if drive_folder_url:
+def check_single_school(school_name, school_prefix, roster_url, drive_folder_url):
+    """
+    Check a single school's roster and return results.
+    Returns a tuple: (success, result_df, player_count, staff_count, error_message)
+    """
+    try:
+        # Get image files from Google Drive
         image_files = get_drive_folder_png_filenames(drive_folder_url)
-        if image_files:
-            st.success(f"Found {len(image_files)} .png files in the Drive folder.")
-            with st.expander("Show detected filenames"):
-                st.write(image_files)
-
-school_prefix = st.text_input("Enter the school prefix (e.g., cal, oregon):")
-school_url = st.text_input("Paste the school roster URL here:")
-
-if st.button("Check Files"):
-    if not image_files:
-        st.error("No image files detected yet.")
-    elif not school_prefix or not school_url:
-        st.error("Please fill in both the school prefix and the roster URL.")
-    else:
+        
+        if not image_files:
+            return (False, None, 0, 0, "No images found in Drive folder")
+        
+        # Parse filenames
         parsed_files = parse_filenames(image_files)
         
-        # --- Scrape players and staff ---
-        player_keys, nickname_keys = scrape_player_names(school_url)
-        staff_dict = scrape_staff_names(school_url)
+        # Scrape players and staff
+        player_keys, nickname_keys = scrape_player_names(roster_url)
+        staff_dict = scrape_staff_names(roster_url)
         
-        # --- Remove staff accidentally scraped as players ---
+        # Remove staff accidentally scraped as players
         for staff_name in list(staff_dict.keys()):
             if staff_name in player_keys:
-                # Only remove if the player name doesn't have a suffix
                 player_original_name = player_keys[staff_name]
                 has_suffix = bool(re.search(r'\b(jr|sr|ii|iii|iv|v)\b', player_original_name.lower()))
-                
-                # If no suffix, it's actually staff, so remove it
                 if not has_suffix:
                     del player_keys[staff_name]
-                # If it has a suffix (like "Preston Murphy Jr."), keep it as a player
         
-        # --- Remove non-player entries using invalid keywords ---
+        # Remove non-player entries using invalid keywords
         invalid_keywords = [
             "coach", "staff", "jersey", "number", "manager", "director",
             "head coach", "assistant", "trainer", "operations", "headshot", "print",
@@ -968,14 +971,343 @@ if st.button("Check Files"):
                 del nickname_keys[key]
         
         if not player_keys:
-            st.warning("No players detected from the roster page.")
-        else:
-            df = check_mismatches_and_missing(
-                parsed_files, player_keys, nickname_keys, staff_dict, school_prefix
-            )
-            st.subheader("Roster Photo Check")
-            st.dataframe(df)
+            return (False, None, 0, 0, "No players detected from roster page")
+        
+        # Check mismatches and missing
+        df = check_mismatches_and_missing(
+            parsed_files, player_keys, nickname_keys, staff_dict, school_prefix
+        )
+        
+        # Add school name column
+        df.insert(0, 'school', school_name)
+        
+        return (True, df, len(player_keys), len(staff_dict), None)
+        
+    except Exception as e:
+        return (False, None, 0, 0, str(e))
 
-st.subheader("Debug: Staff Dictionary Contents")
-if 'staff_dict' in locals():
-    st.write(staff_dict)
+# --- Streamlit UI (main script) ---
+
+st.title("School Roster Photo Name Checker")
+
+# Add mode selection
+mode = st.radio("Select Mode:", ["Single School Check", "Batch School Check"])
+
+if mode == "Single School Check":
+    # --- SINGLE SCHOOL MODE ---
+    st.subheader("Single School Check")
+    
+    source = st.radio("Where are the images stored?", ["Local folder", "Google Drive folder"])
+
+    image_files: list[str] = []
+
+    if source == "Local folder":
+        folder_path = st.text_input("Paste the path to your image folder here:")
+        if folder_path and os.path.exists(folder_path):
+            image_files = [f for f in os.listdir(folder_path) if f.lower().endswith(".png")]
+            st.caption(f"Found {len(image_files)} .png files locally.")
+        elif folder_path:
+            st.error("Folder path does not exist.")
+
+    elif source == "Google Drive folder":
+        drive_folder_url = st.text_input("Paste the PUBLIC Google Drive folder URL here:")
+        if drive_folder_url:
+            image_files = get_drive_folder_png_filenames(drive_folder_url)
+            if image_files:
+                st.success(f"Found {len(image_files)} .png files in the Drive folder.")
+                with st.expander("Show detected filenames"):
+                    st.write(image_files)
+
+    school_prefix = st.text_input("Enter the school prefix (e.g., cal, oregon):")
+    school_url = st.text_input("Paste the school roster URL here:")
+
+    if st.button("Check Files"):
+        if not image_files:
+            st.error("No image files detected yet.")
+        elif not school_prefix or not school_url:
+            st.error("Please fill in both the school prefix and the roster URL.")
+        else:
+            parsed_files = parse_filenames(image_files)
+            
+            # --- Scrape players and staff ---
+            player_keys, nickname_keys = scrape_player_names(school_url)
+            staff_dict = scrape_staff_names(school_url)
+            
+            # --- Remove staff accidentally scraped as players ---
+            for staff_name in list(staff_dict.keys()):
+                if staff_name in player_keys:
+                    player_original_name = player_keys[staff_name]
+                    has_suffix = bool(re.search(r'\b(jr|sr|ii|iii|iv|v)\b', player_original_name.lower()))
+                    if not has_suffix:
+                        del player_keys[staff_name]
+            
+            # --- Remove non-player entries using invalid keywords ---
+            invalid_keywords = [
+                "coach", "staff", "jersey", "number", "manager", "director",
+                "head coach", "assistant", "trainer", "operations", "headshot", "print",
+                "roster", "search", "jump", "video", "feb", "mar", "stats", "baseball",
+                "donate", "coaches", "camps"
+            ]
+            for key in list(player_keys.keys()):
+                if contains_invalid_word(player_keys[key], invalid_keywords):
+                    del player_keys[key]
+                if key in nickname_keys:
+                    del nickname_keys[key]
+            
+            if not player_keys:
+                st.warning("No players detected from the roster page.")
+            else:
+                df = check_mismatches_and_missing(
+                    parsed_files, player_keys, nickname_keys, staff_dict, school_prefix
+                )
+                st.subheader("Roster Photo Check")
+                st.dataframe(df)
+
+else:
+    # --- BATCH SCHOOL MODE (spreadsheet-driven) ---
+    st.subheader("Batch School Check")
+
+    # ── Step 1: offer the template download ──────────────────────────────
+    st.markdown("### Step 1 — Download the school list template")
+    st.write(
+        "Fill in your schools (one per row), save the file, "
+        "then upload it below. Each row needs: "
+        "**Team Abbreviation**, **Roster URL**, and **Google Drive Folder URL**."
+    )
+
+    def make_template_bytes() -> bytes:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Schools"
+        headers = ["Team Abbreviation", "Roster URL", "Google Drive Folder URL"]
+        hdr_fill = PatternFill("solid", start_color="1F4E79")
+        hdr_font = Font(name="Arial", bold=True, color="FFFFFF", size=11)
+        for ci, h in enumerate(headers, 1):
+            c = ws.cell(row=1, column=ci, value=h)
+            c.font = hdr_font
+            c.fill = hdr_fill
+            c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        examples = [
+            ["utah", "https://utahutes.com/sports/football/roster/2025",
+             "https://drive.google.com/drive/folders/YOUR_FOLDER_ID"],
+            ["arizona", "https://arizonawildcats.com/sports/football/roster/2025",
+             "https://drive.google.com/drive/folders/YOUR_FOLDER_ID"],
+        ]
+        eg_font = Font(name="Times New Roman", color="000000", italic=False, size=12)
+        for ri, row_data in enumerate(examples, 2):
+            for ci, val in enumerate(row_data, 1):
+                c = ws.cell(row=ri, column=ci, value=val)
+                c.font = eg_font
+                c.alignment = Alignment(vertical="center", wrap_text=True)
+        note = ws.cell(
+            row=5, column=1,
+            value="<-- Replace example rows above with your own schools. Delete these rows when done."
+        )
+        note.font = Font(name="Arial", color="C00000", italic=True, size=9)
+        ws.merge_cells("A5:C5")
+        note.alignment = Alignment(horizontal="left", vertical="center")
+        ws.column_dimensions["A"].width = 22
+        ws.column_dimensions["B"].width = 62
+        ws.column_dimensions["C"].width = 62
+        ws.row_dimensions[1].height = 30
+        ws.freeze_panes = "A2"
+        buf = BytesIO()
+        wb.save(buf)
+        return buf.getvalue()
+
+    st.download_button(
+        label="📥 Download School List Template (.xlsx)",
+        data=make_template_bytes(),
+        file_name="roster_schools_template.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+    st.divider()
+
+    # ── Step 2: upload the filled-in spreadsheet ─────────────────────────
+    st.markdown("### Step 2 — Upload your filled-in school list")
+    uploaded = st.file_uploader(
+        "Upload your Excel school list (.xlsx)",
+        type=["xlsx", "xls"],
+        help="Must have columns: Team Abbreviation, Roster URL, Google Drive Folder URL",
+    )
+
+    schools_df = None
+    if uploaded:
+        try:
+            df_raw = pd.read_excel(uploaded, dtype=str)
+            df_raw.columns = [c.strip() for c in df_raw.columns]
+            rename_map = {}
+            for col in df_raw.columns:
+                lower = col.lower()
+                if "abbreviation" in lower or "prefix" in lower or lower in ("abbr", "team"):
+                    rename_map[col] = "Team Abbreviation"
+                elif "roster" in lower:
+                    rename_map[col] = "Roster URL"
+                elif "drive" in lower or "folder" in lower:
+                    rename_map[col] = "Google Drive Folder URL"
+            df_raw = df_raw.rename(columns=rename_map)
+            required = {"Team Abbreviation", "Roster URL", "Google Drive Folder URL"}
+            missing_cols = required - set(df_raw.columns)
+            if missing_cols:
+                st.error(f"Spreadsheet is missing columns: {', '.join(missing_cols)}")
+            else:
+                schools_df = df_raw[list(required)].dropna(how="all")
+                schools_df = schools_df[
+                    schools_df["Roster URL"].str.startswith("http", na=False)
+                ].reset_index(drop=True)
+                if schools_df.empty:
+                    st.error("No valid rows found (Roster URL must start with 'http').")
+                    schools_df = None
+                else:
+                    st.success(f"Loaded **{len(schools_df)} school(s)** from spreadsheet.")
+                    with st.expander("Preview school list"):
+                        st.dataframe(schools_df, use_container_width=True)
+        except Exception as e:
+            st.error(f"Could not read spreadsheet: {e}")
+
+    st.divider()
+
+    # ── Step 3: run the batch check ───────────────────────────────────────
+    st.markdown("### Step 3 — Run the batch check")
+
+    if schools_df is None:
+        st.info("Upload a school list above to enable batch processing.")
+    else:
+        if st.button(
+            f"🔍 Batch Process {len(schools_df)} School(s)",
+            type="primary",
+            use_container_width=True,
+        ):
+            from datetime import datetime
+            results = []
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            for idx, row in schools_df.iterrows():
+                abbr       = str(row["Team Abbreviation"]).strip()
+                roster_url = str(row["Roster URL"]).strip()
+                drive_url  = str(row["Google Drive Folder URL"]).strip()
+
+                status_text.text(f"Checking {abbr}... ({idx + 1}/{len(schools_df)})")
+
+                success, df, player_count, staff_count, error = check_single_school(
+                    abbr, abbr, roster_url, drive_url
+                )
+
+                if success:
+                    issues = len(df[df["status"] != "✅"])
+                    results.append({
+                        "school": abbr,
+                        "status": "✅ Success",
+                        "players": player_count,
+                        "staff": staff_count,
+                        "issues": issues,
+                        "data": df,
+                    })
+                else:
+                    results.append({
+                        "school": abbr,
+                        "status": f"❌ Error: {error}",
+                        "players": 0,
+                        "staff": 0,
+                        "issues": 0,
+                        "data": None,
+                    })
+
+                progress_bar.progress((idx + 1) / len(schools_df))
+
+            status_text.text("✅ Batch check complete!")
+
+            # Summary table
+            st.subheader("📊 Summary")
+            summary_data = [{
+                "School": r["school"],
+                "Status": r["status"],
+                "Players on Roster": r["players"],
+                "Issues Found": r["issues"],
+            } for r in results]
+            st.dataframe(pd.DataFrame(summary_data), use_container_width=True)
+
+            # Detailed results per school
+            st.subheader("📋 Detailed Results")
+            for r in results:
+                if r["data"] is not None:
+                    with st.expander(f"{r['school']}  —  {r['issues']} issue(s)"):
+                        st.dataframe(r["data"], use_container_width=True)
+                        total = len(r["data"])
+                        ok    = len(r["data"][r["data"]["status"] == "✅"])
+                        st.caption(
+                            f"✅ {ok} OK  |  ⚠️ {total - ok} issues  |  📊 {total} total entries"
+                        )
+                else:
+                    with st.expander(f"{r['school']}  —  ERROR"):
+                        st.error(r["status"])
+
+            # Downloads
+            st.subheader("📥 Download Results")
+            col1, col2 = st.columns(2)
+            ts_safe = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+            with col1:
+                excel_buf = BytesIO()
+                with pd.ExcelWriter(excel_buf, engine="openpyxl") as writer:
+                    pd.DataFrame(summary_data).to_excel(
+                        writer, sheet_name="Summary", index=False
+                    )
+                    for r in results:
+                        if r["data"] is not None:
+                            sheet_name = re.sub(r'[:\\\/\?\*\[\]]', "", r["school"])[:31]
+                            r["data"].to_excel(writer, sheet_name=sheet_name, index=False)
+                excel_buf.seek(0)
+                st.download_button(
+                    label="📊 Download Excel Report",
+                    data=excel_buf,
+                    file_name=f"batch_roster_check_{ts_safe}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                )
+
+            with col2:
+                # Build plain-text report
+                lines = []
+                lines.append("=" * 70)
+                lines.append("ROSTER PHOTO NAME CHECKER — BATCH REPORT")
+                lines.append(f"Generated: {timestamp}")
+                lines.append("=" * 70)
+                for r in results:
+                    lines.append("")
+                    lines.append(f"SCHOOL: {r['school'].upper()}")
+                    lines.append("-" * 50)
+                    if r["data"] is None:
+                        lines.append(f"  STATUS: ERROR — {r['status']}")
+                        continue
+                    df2 = r["data"]
+                    total = len(df2)
+                    ok    = len(df2[df2["status"] == "✅"])
+                    lines.append(f"  Players on roster : {r['players']}")
+                    lines.append(f"  Files checked     : {total}")
+                    lines.append(f"  OK                : {ok}")
+                    lines.append(f"  Issues            : {total - ok}")
+                    if total - ok > 0:
+                        lines.append("")
+                        lines.append("  Issues:")
+                        for _, row2 in df2[df2["status"] != "✅"].iterrows():
+                            fname = row2.get("filename") or \
+                                    f"[{row2.get('first','')}_{row2.get('last','')}]"
+                            lines.append(f"    {str(row2['status']):45s}  {fname}")
+                lines.append("")
+                lines.append("=" * 70)
+                lines.append("END OF REPORT")
+                text_report = "\n".join(lines)
+
+                st.download_button(
+                    label="📄 Download Text Report",
+                    data=text_report.encode("utf-8"),
+                    file_name=f"batch_roster_check_{ts_safe}.txt",
+                    mime="text/plain",
+                    use_container_width=True,
+                )
